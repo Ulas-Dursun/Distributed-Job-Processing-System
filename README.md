@@ -1,4 +1,4 @@
-# ⚡ QueueForge
+# ⚡ Distributed Job Processing System
 
 A distributed job processing system built with Go. Submit a URL via the web UI or REST API — a worker pool fetches the page, counts words, and persists the result. Includes retry logic, graceful shutdown, Prometheus metrics, and Docker Compose for one-command deployment.
 
