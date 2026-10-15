@@ -9,6 +9,7 @@ import (
 )
 
 type Config struct {
+	AppMode     string // "all", "api", "worker"
 	ServerPort  string
 	DatabaseURL string
 	RedisURL    string
@@ -32,6 +33,7 @@ func Load() *Config {
 	}
 
 	return &Config{
+		AppMode:     getEnv("APP_MODE", "all"),
 		ServerPort:  getEnv("SERVER_PORT", "8080"),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://queueuser:queuepass@localhost:5432/queueforge?sslmode=disable"),
 		RedisURL:    getEnv("REDIS_URL", "redis://localhost:6379"),

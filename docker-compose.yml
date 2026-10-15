@@ -30,19 +30,39 @@ services:
       timeout: 5s
       retries: 5
 
-  app:
+  # API Service (Ingestion, Web UI, Health/Metrics)
+  api:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: queueforge-app
+    container_name: queueforge-api
     environment:
+      APP_MODE: api
+      SERVER_PORT: 8080
+      DATABASE_URL: postgres://queueuser:queuepass@postgres:5432/queueforge?sslmode=disable
+      REDIS_URL: redis://redis:6379
+      MAX_RETRIES: 3
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: on-failure
+
+  # Worker Service (Asynchronous Queue Consumers - Scalable via --scale worker=N)
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      APP_MODE: worker
       SERVER_PORT: 8080
       DATABASE_URL: postgres://queueuser:queuepass@postgres:5432/queueforge?sslmode=disable
       REDIS_URL: redis://redis:6379
       WORKER_COUNT: 5
       MAX_RETRIES: 3
-    ports:
-      - "8080:8080"
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,7 +78,8 @@ services:
     volumes:
       - ./docker/prometheus.yml:/etc/prometheus/prometheus.yml
     depends_on:
-      - app
+      - api
+      - worker
 
   grafana:
     image: grafana/grafana:latest
@@ -69,6 +90,7 @@ services:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
     volumes:
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
       - grafana-data:/var/lib/grafana
     depends_on:
       - prometheus

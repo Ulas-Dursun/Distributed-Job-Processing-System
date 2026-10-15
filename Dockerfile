@@ -12,6 +12,8 @@ RUN go build -o queueforge ./cmd/server
 # ---- Runtime stage ----
 FROM alpine:3.19 AS runtime
 
+RUN apk add --no-cache ca-certificates tzdata
+
 RUN addgroup -S appgroup && adduser -S appuser -G appgroup
 
 WORKDIR /app
@@ -25,4 +27,4 @@ USER appuser
 
 EXPOSE 8080
 
-ENTRYPOINT ["./queueforge"]ueueforge"]
+ENTRYPOINT ["./queueforge"]

@@ -1,7 +1,10 @@
 package handler
 
 import (
+	"encoding/json"
+	"fmt"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -9,6 +12,7 @@ import (
 	"github.com/ulasdursun/queueforge/internal/domain"
 	"github.com/ulasdursun/queueforge/internal/queue"
 	"github.com/ulasdursun/queueforge/internal/repository"
+	"github.com/ulasdursun/queueforge/internal/worker"
 )
 
 type JobHandler struct {
@@ -35,18 +39,7 @@ type CreateJobRequest struct {
 	Payload string `json:"payload" binding:"required"`
 }
 
-// CreateJob godoc
-// POST /api/jobs
-// CreateJob godoc
-// @Summary      Create a new job
-// @Tags         jobs
-// @Accept       json
-// @Produce      json
-// @Param        request body CreateJobRequest true "Job request"
-// @Success      201 {object} domain.Job
-// @Failure      400 {object} map[string]string
-// @Failure      500 {object} map[string]string
-// @Router       /api/jobs [post]
+// CreateJob handles incoming job creation requests.
 func (h *JobHandler) CreateJob(c *gin.Context) {
 	var req CreateJobRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -61,6 +54,24 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "Invalid job type",
 			"message": "supported types: URL_FETCH",
+		})
+		return
+	}
+
+	// Early fail-fast validation for payload
+	var p worker.URLFetchPayload
+	if err := json.Unmarshal([]byte(req.Payload), &p); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid payload format",
+			"message": "payload must be valid JSON: {\"url\": \"https://...\"}",
+		})
+		return
+	}
+
+	if err := worker.ValidateTargetURL(p.URL); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid URL or security restriction",
+			"message": err.Error(),
 		})
 		return
 	}
@@ -86,6 +97,12 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 	}
 
 	if err := h.queue.Push(c.Request.Context(), job.ID); err != nil {
+		// Prevent zombie QUEUED jobs: mark FAILED in DB if Redis push fails
+		job.Status = domain.StatusFailed
+		errMsg := fmt.Sprintf("Failed to push to queue: %v", err)
+		job.ErrorMsg = &errMsg
+		_ = h.jobRepo.UpdateAfterProcessing(job)
+
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to queue job",
 			"message": err.Error(),
@@ -96,16 +113,7 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 	c.JSON(http.StatusCreated, job)
 }
 
-// GetJob godoc
-// GET /api/jobs/:id
-// @Summary      Get job by ID
-// @Tags         jobs
-// @Produce      json
-// @Param        id path string true "Job ID"
-// @Success      200 {object} domain.Job
-// @Failure      400 {object} map[string]string
-// @Failure      404 {object} map[string]string
-// @Router       /api/jobs/{id} [get]
+// GetJob fetches a job by UUID.
 func (h *JobHandler) GetJob(c *gin.Context) {
 	id, err := uuid.Parse(c.Param("id"))
 	if err != nil {
@@ -135,19 +143,13 @@ func (h *JobHandler) GetJob(c *gin.Context) {
 	c.JSON(http.StatusOK, job)
 }
 
-// ListJobs godoc
-// GET /api/jobs?status=QUEUED
-// @Summary      List all jobs
-// @Tags         jobs
-// @Produce      json
-// @Param        status query string false "Filter by status"
-// @Success      200 {object} map[string]interface{}
-// @Failure      500 {object} map[string]string
-// @Router       /api/jobs [get]
+// ListJobs returns jobs filtered by optional status with pagination.
 func (h *JobHandler) ListJobs(c *gin.Context) {
 	status := c.Query("status")
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
 
-	jobs, err := h.jobRepo.List(status)
+	jobs, err := h.jobRepo.List(status, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to list jobs",
@@ -161,7 +163,9 @@ func (h *JobHandler) ListJobs(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"count": len(jobs),
-		"jobs":  jobs,
+		"count":  len(jobs),
+		"limit":  limit,
+		"offset": offset,
+		"jobs":   jobs,
 	})
 }

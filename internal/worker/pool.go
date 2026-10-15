@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -19,6 +20,7 @@ type Pool struct {
 	workerCount int
 	queue       *queue.RedisQueue
 	jobRepo     *repository.JobRepository
+	wg          sync.WaitGroup
 }
 
 func NewPool(
@@ -33,21 +35,51 @@ func NewPool(
 	}
 }
 
-// Start launches N worker goroutines. Blocks until ctx is cancelled.
+// Start launches N worker goroutines and blocks until ctx is cancelled and workers exit.
 func (p *Pool) Start(ctx context.Context) {
 	log.Info().Int("workers", p.workerCount).Msg("Starting worker pool")
 
+	// Periodically update queue size metric
+	go p.monitorQueue(ctx)
+
+	p.wg.Add(p.workerCount)
 	for i := range p.workerCount {
 		go p.runWorker(ctx, i+1)
 	}
 
-	// Block until context is cancelled (SIGTERM received)
+	// Block until context is cancelled (SIGTERM/SIGINT received)
 	<-ctx.Done()
-	log.Info().Msg("Worker pool shutting down")
+	log.Info().Msg("Worker pool shutting down, waiting for in-flight jobs to complete...")
+	p.wg.Wait()
+	log.Info().Msg("All workers stopped cleanly")
 }
 
-// runWorker is the main loop for a single worker goroutine.
+// monitorQueue periodically updates the QueueSize Prometheus metric.
+func (p *Pool) monitorQueue(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if length, err := p.queue.Len(ctx); err == nil {
+				metrics.QueueSize.Set(float64(length))
+			}
+		}
+	}
+}
+
+// runWorker is the main loop for a single worker goroutine with panic recovery.
 func (p *Pool) runWorker(ctx context.Context, id int) {
+	defer p.wg.Done()
+	defer func() {
+		if r := recover(); r != nil {
+			log.Error().Int("worker_id", id).Interface("recover", r).Msg("Worker recovered from panic")
+		}
+	}()
+
 	log.Info().Int("worker_id", id).Msg("Worker started")
 
 	for {
@@ -63,12 +95,15 @@ func (p *Pool) runWorker(ctx context.Context, id int) {
 
 // processNext pops one job from the queue and processes it.
 func (p *Pool) processNext(ctx context.Context, workerID int) {
-	// BRPOP with 2s timeout so ctx.Done() is checked regularly
-	jobID, err := p.queue.Pop(ctx, 2*time.Second)
+	// BRPOP with 1s timeout so ctx.Done() is checked regularly
+	jobID, err := p.queue.Pop(ctx, 1*time.Second)
 	if err != nil {
 		// Context cancelled or timeout — not an error
 		return
 	}
+
+	metrics.ActiveWorkers.Inc()
+	defer metrics.ActiveWorkers.Dec()
 
 	if err := p.handle(ctx, jobID, workerID); err != nil {
 		log.Error().
@@ -118,19 +153,24 @@ func (p *Pool) handle(ctx context.Context, jobID uuid.UUID, workerID int) error 
 				Int("attempt", job.Attempts).
 				Dur("backoff", backoff).
 				Err(err).
-				Msg("Job failed, retrying")
+				Msg("Job failed, scheduled for retry")
 
 			job.Status = domain.StatusQueued
 			if err := p.jobRepo.UpdateAfterProcessing(job); err != nil {
 				return err
 			}
 
-			// Wait backoff duration then re-queue
-			time.Sleep(backoff)
-
-			if err := p.queue.Push(ctx, job.ID); err != nil {
-				return fmt.Errorf("failed to re-queue job: %w", err)
-			}
+			// Non-blocking backoff: re-queue after backoff in a separate goroutine
+			// so that this worker goroutine is freed immediately for other jobs.
+			go func(retryID uuid.UUID, delay time.Duration) {
+				time.Sleep(delay)
+				if err := p.queue.Push(context.Background(), retryID); err != nil {
+					log.Error().
+						Str("job_id", retryID.String()).
+						Err(err).
+						Msg("Failed to re-queue job after backoff")
+				}
+			}(job.ID, backoff)
 
 			metrics.JobsTotal.WithLabelValues("retried").Inc()
 			return nil

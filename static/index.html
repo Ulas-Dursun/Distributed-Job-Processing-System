@@ -739,6 +739,31 @@
         .log-msg.warn { color: #fcd34d; }
         .log-msg.accent { color: var(--accent-2); }
 
+        .jobs-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: .84rem;
+            text-align: left;
+            margin-top: 6px;
+        }
+        .jobs-table th {
+            color: var(--text-3);
+            text-transform: uppercase;
+            letter-spacing: .08em;
+            font-size: .72rem;
+            padding: 10px 12px;
+            border-bottom: 1px solid var(--border);
+        }
+        .jobs-table td {
+            padding: 11px 12px;
+            border-bottom: 1px solid rgba(255,255,255,.04);
+            color: var(--text-2);
+            vertical-align: middle;
+        }
+        .jobs-table tr.recent-job-row:hover td {
+            background: rgba(108,99,255,.07);
+        }
+
         .footer {
             display: flex;
             justify-content: center;
@@ -983,6 +1008,40 @@
                         Submit a URL to start seeing execution events here.
                     </div>
                 </div>
+            </div>
+        </div>
+    </section>
+
+    <section class="card" style="margin-top:18px;" aria-labelledby="history-title">
+        <div class="card-inner">
+            <div class="card-header">
+                <div class="card-title-wrap">
+                    <div class="eyebrow">Persisted state</div>
+                    <h2 class="card-title" id="history-title">Recent Jobs</h2>
+                    <p class="card-copy">Stored in PostgreSQL with worker attempts and status tracking. Click any row to inspect.</p>
+                </div>
+                <button class="button button-ghost" id="refresh-history-btn" type="button">↻ Refresh</button>
+            </div>
+            <div style="overflow-x:auto;">
+                <table class="jobs-table">
+                    <thead>
+                        <tr>
+                            <th>Status</th>
+                            <th>Job ID</th>
+                            <th>Target URL</th>
+                            <th>Word Count</th>
+                            <th>Attempts</th>
+                            <th>Created At</th>
+                        </tr>
+                    </thead>
+                    <tbody id="recent-jobs-body">
+                        <tr>
+                            <td colspan="6" style="text-align:center;padding:24px;color:var(--text-3);">
+                                Loading recent jobs…
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
             </div>
         </div>
     </section>
@@ -1320,6 +1379,7 @@
                 markTransition('QUEUED', 'Job accepted by API', 'info');
                 startElapsedTicker();
                 schedulePoll(800);
+                loadRecentJobs();
             } catch (error) {
                 const message = error?.name === 'AbortError'
                     ? 'Previous request cancelled.'
@@ -1372,6 +1432,7 @@
                     setBusy(false);
                     updateElapsedUI();
                     appendLog(`Word count: ${safeResultFromJob(job).word_count ?? safeResultFromJob(job).wordCount ?? '—'}`, 'success');
+                    loadRecentJobs();
                     return;
                 } else if (status === 'FAILED') {
                     stopPolling();
@@ -1379,6 +1440,7 @@
                     setFailureResult(job);
                     setBusy(false);
                     updateElapsedUI();
+                    loadRecentJobs();
                     return;
                 } else {
                     markTransition(status, `Observed status: ${status}`, 'info');
@@ -1462,8 +1524,88 @@
             }
         });
 
+        async function loadRecentJobs() {
+            try {
+                const res = await fetch('/api/jobs?limit=8');
+                if (!res.ok) return;
+                const data = await res.json();
+                const tbody = document.getElementById('recent-jobs-body');
+                if (!tbody) return;
+                if (!data.jobs || data.jobs.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:24px;color:var(--text-3);">No jobs recorded yet.</td></tr>';
+                    return;
+                }
+                tbody.innerHTML = data.jobs.map(j => {
+                    let parsed = {};
+                    try { parsed = JSON.parse(j.payload || '{}'); } catch(e) {}
+                    let resObj = {};
+                    try { resObj = JSON.parse(j.result || '{}'); } catch(e) {}
+                    const wc = resObj.word_count != null ? resObj.word_count.toLocaleString() : (j.error ? 'Error' : '—');
+                    const statusCls = j.status === 'COMPLETED' ? 'b-completed' : (j.status === 'FAILED' ? 'b-failed' : (j.status === 'PROCESSING' ? 'b-processing' : 'b-queued'));
+                    const shortId = (j.id || '').slice(0, 8);
+                    const timeStr = j.created_at ? new Date(j.created_at).toLocaleTimeString() : '—';
+                    return `
+                        <tr data-id="${j.id}" class="recent-job-row" style="cursor:pointer;" title="Click to view details">
+                            <td><span class="badge ${statusCls}" style="padding:4px 9px;font-size:0.72rem;">${j.status}</span></td>
+                            <td style="font-family:var(--mono);color:var(--accent-2);">${shortId}</td>
+                            <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${parsed.url || '—'}</td>
+                            <td style="font-weight:700;">${wc}</td>
+                            <td>${j.attempts}/${j.max_retries}</td>
+                            <td style="color:var(--text-3);font-size:0.78rem;">${timeStr}</td>
+                        </tr>
+                    `;
+                }).join('');
+
+                document.querySelectorAll('.recent-job-row').forEach(row => {
+                    row.addEventListener('click', async () => {
+                        const id = row.getAttribute('data-id');
+                        if (id) {
+                            await inspectJob(id);
+                        }
+                    });
+                });
+            } catch(err) {
+                console.error('Failed to load recent jobs:', err);
+            }
+        }
+
+        async function inspectJob(jobId) {
+            try {
+                const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
+                if (!res.ok) return;
+                const job = await res.json();
+                state.currentJobId = job.id;
+                els.jobId.textContent = formatJobId(job.id);
+                els.copyJobBtn.disabled = false;
+                revealStatusShell();
+                setStatus(job.status);
+                let parsed = {};
+                try { parsed = JSON.parse(job.payload || '{}'); } catch(e) {}
+                state.currentUrl = parsed.url || '';
+                if (job.status === 'COMPLETED') {
+                    updateResult(job, parsed.url);
+                } else if (job.status === 'FAILED') {
+                    setFailureResult(job);
+                } else {
+                    hideResult();
+                }
+                appendLog(`Inspecting historical job: ${job.id} (${job.status})`, 'info');
+                window.scrollTo({ top: 180, behavior: 'smooth' });
+            } catch(err) {
+                console.error('Failed to inspect job:', err);
+            }
+        }
+
+        const refreshHistoryBtn = document.getElementById('refresh-history-btn');
+        if (refreshHistoryBtn) {
+            refreshHistoryBtn.addEventListener('click', () => {
+                loadRecentJobs();
+            });
+        }
+
         resetUi();
         clearLogs();
+        loadRecentJobs();
     })();
 </script>
 </body>

@@ -70,21 +70,31 @@ func (r *JobRepository) GetByID(id uuid.UUID) (*domain.Job, error) {
 	return job, nil
 }
 
-// List fetches all jobs, optionally filtered by status.
-func (r *JobRepository) List(status string) ([]*domain.Job, error) {
+// List fetches jobs, optionally filtered by status, with pagination support.
+func (r *JobRepository) List(status string, limit int, offset int) ([]*domain.Job, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
 	query := `
 		SELECT id, type, payload, status, result, error_msg,
 		       attempts, max_retries, created_at, updated_at
 		FROM jobs`
 
 	args := []any{}
+	argIdx := 1
 
 	if status != "" {
-		query += " WHERE status = $1"
+		query += fmt.Sprintf(" WHERE status = $%d", argIdx)
 		args = append(args, status)
+		argIdx++
 	}
 
-	query += " ORDER BY created_at DESC"
+	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
+	args = append(args, limit, offset)
 
 	rows, err := r.db.Query(query, args...)
 	if err != nil {
