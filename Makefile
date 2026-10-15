@@ -32,7 +32,7 @@ docker-scale:
 
 ## load-test: Run automated 500-submission load test against localhost:8080
 load-test:
-	go run ./scripts/load_test.go -url http://localhost:8080 -c 50 -n 500
+	go run ./scripts/loadtest.go -url http://localhost:8080 -c 50 -n 500
 
 ## clean: Clean compiled binaries
 clean:

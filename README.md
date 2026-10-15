@@ -115,7 +115,7 @@ QueueForge includes a dedicated concurrent load testing CLI:
 
 ```bash
 # Submit 500 jobs with 50 concurrent workers
-go run ./scripts/load_test.go -url http://localhost:8080 -c 50 -n 500
+go run ./scripts/loadtest.go -url http://localhost:8080 -c 50 -n 500
 ```
 
 Sample output:
