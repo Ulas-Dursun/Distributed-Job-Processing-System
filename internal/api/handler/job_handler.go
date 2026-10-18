@@ -5,11 +5,13 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/ulasdursun/queueforge/internal/domain"
+	"github.com/ulasdursun/queueforge/internal/metrics"
 	"github.com/ulasdursun/queueforge/internal/queue"
 	"github.com/ulasdursun/queueforge/internal/repository"
 	"github.com/ulasdursun/queueforge/internal/worker"
@@ -110,6 +112,7 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 		return
 	}
 
+	metrics.JobsTotal.WithLabelValues("queued").Inc()
 	c.JSON(http.StatusCreated, job)
 }
 
@@ -145,9 +148,27 @@ func (h *JobHandler) GetJob(c *gin.Context) {
 
 // ListJobs returns jobs filtered by optional status with pagination.
 func (h *JobHandler) ListJobs(c *gin.Context) {
-	status := c.Query("status")
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "50"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	status := strings.ToUpper(strings.TrimSpace(c.Query("status")))
+	if status != "" {
+		switch domain.JobStatus(status) {
+		case domain.StatusQueued, domain.StatusProcessing, domain.StatusCompleted, domain.StatusFailed:
+		default:
+			c.JSON(http.StatusBadRequest, gin.H{
+				"error":   "Invalid status filter",
+				"message": "allowed values: QUEUED, PROCESSING, COMPLETED, FAILED",
+			})
+			return
+		}
+	}
+
+	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
+	if err != nil || limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	offset, err := strconv.Atoi(c.DefaultQuery("offset", "0"))
+	if err != nil || offset < 0 {
+		offset = 0
+	}
 
 	jobs, err := h.jobRepo.List(status, limit, offset)
 	if err != nil {

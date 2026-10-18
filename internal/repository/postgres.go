@@ -43,6 +43,7 @@ func initSchema(db *sql.DB) error {
 	);
 	CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 	CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+	CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
 	`
 	_, err := db.Exec(schema)
 	return err

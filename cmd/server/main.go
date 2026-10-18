@@ -31,6 +31,11 @@ func main() {
 
 	// Config
 	cfg := config.Load()
+	switch cfg.AppMode {
+	case "all", "api", "worker":
+	default:
+		log.Fatal().Str("app_mode", cfg.AppMode).Msg("Invalid APP_MODE; allowed values are: all, api, worker")
+	}
 	log.Info().Str("mode", cfg.AppMode).Msg("Starting QueueForge")
 
 	// Prometheus metrics

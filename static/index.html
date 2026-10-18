@@ -1524,6 +1524,15 @@
             }
         });
 
+        function escapeHtml(str) {
+            return String(str ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
         async function loadRecentJobs() {
             try {
                 const res = await fetch('/api/jobs?limit=8');
@@ -1540,17 +1549,21 @@
                     try { parsed = JSON.parse(j.payload || '{}'); } catch(e) {}
                     let resObj = {};
                     try { resObj = JSON.parse(j.result || '{}'); } catch(e) {}
-                    const wc = resObj.word_count != null ? resObj.word_count.toLocaleString() : (j.error ? 'Error' : '—');
+                    const wc = resObj.word_count != null ? escapeHtml(resObj.word_count.toLocaleString()) : (j.error ? 'Error' : '—');
                     const statusCls = j.status === 'COMPLETED' ? 'b-completed' : (j.status === 'FAILED' ? 'b-failed' : (j.status === 'PROCESSING' ? 'b-processing' : 'b-queued'));
-                    const shortId = (j.id || '').slice(0, 8);
-                    const timeStr = j.created_at ? new Date(j.created_at).toLocaleTimeString() : '—';
+                    const safeId = escapeHtml(j.id || '');
+                    const shortId = escapeHtml((j.id || '').slice(0, 8));
+                    const safeStatus = escapeHtml(j.status || 'QUEUED');
+                    const safeUrl = escapeHtml(parsed.url || '—');
+                    const safeAttempts = `${Number(j.attempts) || 0}/${Number(j.max_retries) || 0}`;
+                    const timeStr = j.created_at ? escapeHtml(new Date(j.created_at).toLocaleTimeString()) : '—';
                     return `
-                        <tr data-id="${j.id}" class="recent-job-row" style="cursor:pointer;" title="Click to view details">
-                            <td><span class="badge ${statusCls}" style="padding:4px 9px;font-size:0.72rem;">${j.status}</span></td>
+                        <tr data-id="${safeId}" class="recent-job-row" style="cursor:pointer;" title="Click to view details">
+                            <td><span class="badge ${statusCls}" style="padding:4px 9px;font-size:0.72rem;">${safeStatus}</span></td>
                             <td style="font-family:var(--mono);color:var(--accent-2);">${shortId}</td>
-                            <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${parsed.url || '—'}</td>
+                            <td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${safeUrl}</td>
                             <td style="font-weight:700;">${wc}</td>
-                            <td>${j.attempts}/${j.max_retries}</td>
+                            <td>${safeAttempts}</td>
                             <td style="color:var(--text-3);font-size:0.78rem;">${timeStr}</td>
                         </tr>
                     `;
@@ -1571,10 +1584,13 @@
 
         async function inspectJob(jobId) {
             try {
+                stopPolling();
+                stopElapsedTicker();
                 const res = await fetch(`/api/jobs/${encodeURIComponent(jobId)}`);
                 if (!res.ok) return;
                 const job = await res.json();
                 state.currentJobId = job.id;
+                state.lastStatus = job.status;
                 els.jobId.textContent = formatJobId(job.id);
                 els.copyJobBtn.disabled = false;
                 revealStatusShell();
@@ -1583,13 +1599,18 @@
                 try { parsed = JSON.parse(job.payload || '{}'); } catch(e) {}
                 state.currentUrl = parsed.url || '';
                 if (job.status === 'COMPLETED') {
+                    setSubmitting(false);
                     updateResult(job, parsed.url);
                 } else if (job.status === 'FAILED') {
+                    setSubmitting(false);
                     setFailureResult(job);
                 } else {
                     hideResult();
+                    state.startedAt = job.created_at ? new Date(job.created_at).getTime() : Date.now();
+                    startElapsedTicker();
+                    schedulePoll(300);
                 }
-                appendLog(`Inspecting historical job: ${job.id} (${job.status})`, 'info');
+                appendLog(`Inspecting job: ${job.id} (${job.status})`, 'info');
                 window.scrollTo({ top: 180, behavior: 'smooth' });
             } catch(err) {
                 console.error('Failed to inspect job:', err);

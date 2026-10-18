@@ -49,13 +49,17 @@ func (p *Pool) Start(ctx context.Context) {
 
 	// Block until context is cancelled (SIGTERM/SIGINT received)
 	<-ctx.Done()
-	log.Info().Msg("Worker pool shutting down, waiting for in-flight jobs to complete...")
+	log.Info().Msg("Worker pool shutting down, waiting for in-flight jobs and pending retries to complete...")
 	p.wg.Wait()
 	log.Info().Msg("All workers stopped cleanly")
 }
 
 // monitorQueue periodically updates the QueueSize Prometheus metric.
 func (p *Pool) monitorQueue(ctx context.Context) {
+	if length, err := p.queue.Len(ctx); err == nil {
+		metrics.QueueSize.Set(float64(length))
+	}
+
 	ticker := time.NewTicker(2 * time.Second)
 	defer ticker.Stop()
 
@@ -160,11 +164,26 @@ func (p *Pool) handle(ctx context.Context, jobID uuid.UUID, workerID int) error 
 				return err
 			}
 
-			// Non-blocking backoff: re-queue after backoff in a separate goroutine
-			// so that this worker goroutine is freed immediately for other jobs.
+			// Non-blocking backoff tracked by WaitGroup:
+			// Frees worker immediately, and if shutdown occurs during backoff sleep,
+			// flushes the job ID back to Redis immediately before Redis closes.
+			p.wg.Add(1)
 			go func(retryID uuid.UUID, delay time.Duration) {
-				time.Sleep(delay)
-				if err := p.queue.Push(context.Background(), retryID); err != nil {
+				defer p.wg.Done()
+				timer := time.NewTimer(delay)
+				defer timer.Stop()
+
+				select {
+				case <-timer.C:
+				case <-ctx.Done():
+					log.Info().
+						Str("job_id", retryID.String()).
+						Msg("Shutdown during retry backoff; flushing job back to queue immediately")
+				}
+
+				pushCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				if err := p.queue.Push(pushCtx, retryID); err != nil {
 					log.Error().
 						Str("job_id", retryID.String()).
 						Err(err).
@@ -188,6 +207,7 @@ func (p *Pool) handle(ctx context.Context, jobID uuid.UUID, workerID int) error 
 	} else {
 		job.Status = domain.StatusCompleted
 		job.Result = &result
+		job.ErrorMsg = nil // Clear any previous attempt's error message
 		metrics.JobsTotal.WithLabelValues("completed").Inc()
 
 		log.Info().
