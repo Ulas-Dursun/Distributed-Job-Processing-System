@@ -8,14 +8,13 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/ulasdursun/queueforge/internal/api/handler"
 	"github.com/ulasdursun/queueforge/internal/api/middleware"
-	"github.com/ulasdursun/queueforge/internal/queue"
-	"github.com/ulasdursun/queueforge/internal/repository"
+	"github.com/ulasdursun/queueforge/internal/domain"
 )
 
 // NewRouter constructs the full HTTP router for API mode or all-in-one mode.
 func NewRouter(
-	jobRepo *repository.JobRepository,
-	q *queue.RedisQueue,
+	jobRepo domain.JobRepository,
+	q domain.JobQueue,
 	maxRetries int,
 	db *sql.DB,
 	redisClient *redis.Client,

@@ -12,20 +12,18 @@ import (
 	"github.com/google/uuid"
 	"github.com/ulasdursun/queueforge/internal/domain"
 	"github.com/ulasdursun/queueforge/internal/metrics"
-	"github.com/ulasdursun/queueforge/internal/queue"
-	"github.com/ulasdursun/queueforge/internal/repository"
-	"github.com/ulasdursun/queueforge/internal/worker"
+	"github.com/ulasdursun/queueforge/internal/validator"
 )
 
 type JobHandler struct {
-	jobRepo    *repository.JobRepository
-	queue      *queue.RedisQueue
+	jobRepo    domain.JobRepository
+	queue      domain.JobQueue
 	maxRetries int
 }
 
 func NewJobHandler(
-	jobRepo *repository.JobRepository,
-	q *queue.RedisQueue,
+	jobRepo domain.JobRepository,
+	q domain.JobQueue,
 	maxRetries int,
 ) *JobHandler {
 	return &JobHandler{
@@ -52,16 +50,16 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 		return
 	}
 
-	if req.Type != "URL_FETCH" {
+	if !domain.IsValidJobType(req.Type) {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "Invalid job type",
-			"message": "supported types: URL_FETCH",
+			"message": fmt.Sprintf("supported types: %s", domain.JobTypeURLFetch),
 		})
 		return
 	}
 
 	// Early fail-fast validation for payload
-	var p worker.URLFetchPayload
+	var p validator.URLFetchPayload
 	if err := json.Unmarshal([]byte(req.Payload), &p); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "Invalid payload format",
@@ -70,7 +68,7 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 		return
 	}
 
-	if err := worker.ValidateTargetURL(p.URL); err != nil {
+	if err := validator.ValidateTargetURL(p.URL); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"error":   "Invalid URL or security restriction",
 			"message": err.Error(),
@@ -81,7 +79,7 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 	now := time.Now()
 	job := &domain.Job{
 		ID:         uuid.New(),
-		Type:       req.Type,
+		Type:       domain.JobType(req.Type),
 		Payload:    req.Payload,
 		Status:     domain.StatusQueued,
 		Attempts:   0,
@@ -90,7 +88,9 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 		UpdatedAt:  now,
 	}
 
-	if err := h.jobRepo.Create(job); err != nil {
+	ctx := c.Request.Context()
+
+	if err := h.jobRepo.Create(ctx, job); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to create job",
 			"message": err.Error(),
@@ -98,12 +98,12 @@ func (h *JobHandler) CreateJob(c *gin.Context) {
 		return
 	}
 
-	if err := h.queue.Push(c.Request.Context(), job.ID); err != nil {
+	if err := h.queue.Push(ctx, job.ID); err != nil {
 		// Prevent zombie QUEUED jobs: mark FAILED in DB if Redis push fails
 		job.Status = domain.StatusFailed
 		errMsg := fmt.Sprintf("Failed to push to queue: %v", err)
 		job.ErrorMsg = &errMsg
-		_ = h.jobRepo.UpdateAfterProcessing(job)
+		_ = h.jobRepo.UpdateAfterProcessing(ctx, job)
 
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to queue job",
@@ -127,7 +127,7 @@ func (h *JobHandler) GetJob(c *gin.Context) {
 		return
 	}
 
-	job, err := h.jobRepo.GetByID(id)
+	job, err := h.jobRepo.GetByID(c.Request.Context(), id)
 	if err != nil {
 		if err == domain.ErrJobNotFound {
 			c.JSON(http.StatusNotFound, gin.H{
@@ -149,16 +149,12 @@ func (h *JobHandler) GetJob(c *gin.Context) {
 // ListJobs returns jobs filtered by optional status with pagination.
 func (h *JobHandler) ListJobs(c *gin.Context) {
 	status := strings.ToUpper(strings.TrimSpace(c.Query("status")))
-	if status != "" {
-		switch domain.JobStatus(status) {
-		case domain.StatusQueued, domain.StatusProcessing, domain.StatusCompleted, domain.StatusFailed:
-		default:
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error":   "Invalid status filter",
-				"message": "allowed values: QUEUED, PROCESSING, COMPLETED, FAILED",
-			})
-			return
-		}
+	if status != "" && !domain.IsValidStatus(status) {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"error":   "Invalid status filter",
+			"message": "allowed values: QUEUED, PROCESSING, COMPLETED, FAILED",
+		})
+		return
 	}
 
 	limit, err := strconv.Atoi(c.DefaultQuery("limit", "50"))
@@ -170,7 +166,7 @@ func (h *JobHandler) ListJobs(c *gin.Context) {
 		offset = 0
 	}
 
-	jobs, err := h.jobRepo.List(status, limit, offset)
+	jobs, err := h.jobRepo.List(c.Request.Context(), status, limit, offset)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"error":   "Failed to list jobs",

@@ -3,7 +3,6 @@ package worker
 import (
 	"context"
 	"fmt"
-	"math"
 	"sync"
 	"time"
 
@@ -11,22 +10,20 @@ import (
 	"github.com/rs/zerolog/log"
 	"github.com/ulasdursun/queueforge/internal/domain"
 	"github.com/ulasdursun/queueforge/internal/metrics"
-	"github.com/ulasdursun/queueforge/internal/queue"
-	"github.com/ulasdursun/queueforge/internal/repository"
 )
 
 // Pool manages a fixed number of worker goroutines.
 type Pool struct {
 	workerCount int
-	queue       *queue.RedisQueue
-	jobRepo     *repository.JobRepository
+	queue       domain.JobQueue
+	jobRepo     domain.JobRepository
 	wg          sync.WaitGroup
 }
 
 func NewPool(
 	workerCount int,
-	q *queue.RedisQueue,
-	jobRepo *repository.JobRepository,
+	q domain.JobQueue,
+	jobRepo domain.JobRepository,
 ) *Pool {
 	return &Pool{
 		workerCount: workerCount,
@@ -120,7 +117,7 @@ func (p *Pool) processNext(ctx context.Context, workerID int) {
 
 // handle fetches the job, processes it, applies retry logic, and persists the result.
 func (p *Pool) handle(ctx context.Context, jobID uuid.UUID, workerID int) error {
-	job, err := p.jobRepo.GetByID(jobID)
+	job, err := p.jobRepo.GetByID(ctx, jobID)
 	if err != nil {
 		return fmt.Errorf("job not found: %w", err)
 	}
@@ -128,11 +125,11 @@ func (p *Pool) handle(ctx context.Context, jobID uuid.UUID, workerID int) error 
 	log.Info().
 		Int("worker_id", workerID).
 		Str("job_id", job.ID.String()).
-		Str("type", job.Type).
+		Str("type", string(job.Type)).
 		Msg("Processing job")
 
 	// Mark as PROCESSING
-	if err := p.jobRepo.UpdateStatus(job.ID, domain.StatusProcessing); err != nil {
+	if err := p.jobRepo.UpdateStatus(ctx, job.ID, domain.StatusProcessing); err != nil {
 		return fmt.Errorf("failed to mark processing: %w", err)
 	}
 
@@ -149,8 +146,7 @@ func (p *Pool) handle(ctx context.Context, jobID uuid.UUID, workerID int) error 
 		job.ErrorMsg = &errMsg
 
 		if job.CanRetry() {
-			// Exponential backoff before re-queuing
-			backoff := time.Duration(math.Pow(2, float64(job.Attempts))) * time.Second
+			backoff := CalculateBackoff(job.Attempts)
 			log.Warn().
 				Int("worker_id", workerID).
 				Str("job_id", job.ID.String()).
@@ -160,7 +156,7 @@ func (p *Pool) handle(ctx context.Context, jobID uuid.UUID, workerID int) error 
 				Msg("Job failed, scheduled for retry")
 
 			job.Status = domain.StatusQueued
-			if err := p.jobRepo.UpdateAfterProcessing(job); err != nil {
+			if err := p.jobRepo.UpdateAfterProcessing(ctx, job); err != nil {
 				return err
 			}
 
@@ -217,5 +213,5 @@ func (p *Pool) handle(ctx context.Context, jobID uuid.UUID, workerID int) error 
 			Msg("Job completed")
 	}
 
-	return p.jobRepo.UpdateAfterProcessing(job)
+	return p.jobRepo.UpdateAfterProcessing(ctx, job)
 }

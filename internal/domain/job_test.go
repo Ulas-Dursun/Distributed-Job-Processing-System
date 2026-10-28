@@ -51,3 +51,44 @@ func TestJob_CanRetry(t *testing.T) {
 		})
 	}
 }
+
+func TestIsValidStatus(t *testing.T) {
+	tests := []struct {
+		status string
+		want   bool
+	}{
+		{"QUEUED", true},
+		{"PROCESSING", true},
+		{"COMPLETED", true},
+		{"FAILED", true},
+		{"UNKNOWN", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			if got := domain.IsValidStatus(tt.status); got != tt.want {
+				t.Errorf("IsValidStatus(%q) = %v, want %v", tt.status, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsValidJobType(t *testing.T) {
+	tests := []struct {
+		jobType string
+		want    bool
+	}{
+		{"URL_FETCH", true},
+		{"UNKNOWN", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.jobType, func(t *testing.T) {
+			if got := domain.IsValidJobType(tt.jobType); got != tt.want {
+				t.Errorf("IsValidJobType(%q) = %v, want %v", tt.jobType, got, tt.want)
+			}
+		})
+	}
+}

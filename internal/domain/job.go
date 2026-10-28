@@ -6,6 +6,18 @@ import (
 	"github.com/google/uuid"
 )
 
+// JobType represents the supported type of job.
+type JobType string
+
+const (
+	JobTypeURLFetch JobType = "URL_FETCH"
+)
+
+// IsValidJobType checks whether the given job type string is supported.
+func IsValidJobType(t string) bool {
+	return JobType(t) == JobTypeURLFetch
+}
+
 // JobStatus represents the lifecycle state of a job.
 type JobStatus string
 
@@ -16,10 +28,20 @@ const (
 	StatusFailed     JobStatus = "FAILED"
 )
 
+// IsValidStatus returns true if the status string matches a recognized lifecycle state.
+func IsValidStatus(status string) bool {
+	switch JobStatus(status) {
+	case StatusQueued, StatusProcessing, StatusCompleted, StatusFailed:
+		return true
+	default:
+		return false
+	}
+}
+
 // Job is the core domain entity.
 type Job struct {
 	ID         uuid.UUID `json:"id"`
-	Type       string    `json:"type"`
+	Type       JobType   `json:"type"`
 	Payload    string    `json:"payload"` // JSON string: {"url": "https://..."}
 	Status     JobStatus `json:"status"`
 	Result     *string   `json:"result"` // JSON string, null until completed

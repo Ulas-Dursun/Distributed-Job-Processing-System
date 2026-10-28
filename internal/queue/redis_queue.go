@@ -7,11 +7,15 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
+	"github.com/ulasdursun/queueforge/internal/domain"
 )
 
 const (
 	jobQueueKey = "queueforge:jobs"
 )
+
+// Ensure RedisQueue satisfies domain.JobQueue at compile time.
+var _ domain.JobQueue = (*RedisQueue)(nil)
 
 type RedisQueue struct {
 	client *redis.Client

@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -9,6 +10,9 @@ import (
 	"github.com/google/uuid"
 	"github.com/ulasdursun/queueforge/internal/domain"
 )
+
+// Ensure JobRepository satisfies domain.JobRepository at compile time.
+var _ domain.JobRepository = (*JobRepository)(nil)
 
 type JobRepository struct {
 	db *sql.DB
@@ -19,14 +23,14 @@ func NewJobRepository(db *sql.DB) *JobRepository {
 }
 
 // Create inserts a new job into the database.
-func (r *JobRepository) Create(job *domain.Job) error {
+func (r *JobRepository) Create(ctx context.Context, job *domain.Job) error {
 	query := `
 		INSERT INTO jobs (id, type, payload, status, attempts, max_retries, created_at, updated_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`
 
-	_, err := r.db.Exec(query,
+	_, err := r.db.ExecContext(ctx, query,
 		job.ID,
-		job.Type,
+		string(job.Type),
 		job.Payload,
 		job.Status,
 		job.Attempts,
@@ -41,7 +45,7 @@ func (r *JobRepository) Create(job *domain.Job) error {
 }
 
 // GetByID fetches a single job by its UUID.
-func (r *JobRepository) GetByID(id uuid.UUID) (*domain.Job, error) {
+func (r *JobRepository) GetByID(ctx context.Context, id uuid.UUID) (*domain.Job, error) {
 	query := `
 		SELECT id, type, payload, status, result, error_msg,
 		       attempts, max_retries, created_at, updated_at
@@ -49,7 +53,7 @@ func (r *JobRepository) GetByID(id uuid.UUID) (*domain.Job, error) {
 		WHERE id = $1`
 
 	job := &domain.Job{}
-	err := r.db.QueryRow(query, id).Scan(
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
 		&job.ID,
 		&job.Type,
 		&job.Payload,
@@ -71,7 +75,7 @@ func (r *JobRepository) GetByID(id uuid.UUID) (*domain.Job, error) {
 }
 
 // List fetches jobs, optionally filtered by status, with pagination support.
-func (r *JobRepository) List(status string, limit int, offset int) ([]*domain.Job, error) {
+func (r *JobRepository) List(ctx context.Context, status string, limit int, offset int) ([]*domain.Job, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 50
 	}
@@ -96,7 +100,7 @@ func (r *JobRepository) List(status string, limit int, offset int) ([]*domain.Jo
 	query += fmt.Sprintf(" ORDER BY created_at DESC LIMIT $%d OFFSET $%d", argIdx, argIdx+1)
 	args = append(args, limit, offset)
 
-	rows, err := r.db.Query(query, args...)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list jobs: %w", err)
 	}
@@ -125,13 +129,13 @@ func (r *JobRepository) List(status string, limit int, offset int) ([]*domain.Jo
 }
 
 // UpdateStatus updates the job status and timestamp.
-func (r *JobRepository) UpdateStatus(id uuid.UUID, status domain.JobStatus) error {
+func (r *JobRepository) UpdateStatus(ctx context.Context, id uuid.UUID, status domain.JobStatus) error {
 	query := `
 		UPDATE jobs
 		SET status = $1, updated_at = $2
 		WHERE id = $3`
 
-	_, err := r.db.Exec(query, status, time.Now(), id)
+	_, err := r.db.ExecContext(ctx, query, status, time.Now(), id)
 	if err != nil {
 		return fmt.Errorf("failed to update job status: %w", err)
 	}
@@ -139,7 +143,7 @@ func (r *JobRepository) UpdateStatus(id uuid.UUID, status domain.JobStatus) erro
 }
 
 // UpdateAfterProcessing updates status, result or error, and increments attempts.
-func (r *JobRepository) UpdateAfterProcessing(job *domain.Job) error {
+func (r *JobRepository) UpdateAfterProcessing(ctx context.Context, job *domain.Job) error {
 	query := `
 		UPDATE jobs
 		SET status     = $1,
@@ -149,7 +153,7 @@ func (r *JobRepository) UpdateAfterProcessing(job *domain.Job) error {
 		    updated_at = $5
 		WHERE id = $6`
 
-	_, err := r.db.Exec(query,
+	_, err := r.db.ExecContext(ctx, query,
 		job.Status,
 		job.Result,
 		job.ErrorMsg,

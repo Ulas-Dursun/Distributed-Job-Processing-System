@@ -6,22 +6,18 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"time"
 
 	"github.com/ulasdursun/queueforge/internal/domain"
+	"github.com/ulasdursun/queueforge/internal/validator"
 )
 
 const maxFetchBytes = 2 * 1024 * 1024 // 2MB limit to prevent worker memory exhaustion (OOM)
 
-// URLFetchPayload is the expected input for URL_FETCH jobs.
-type URLFetchPayload struct {
-	URL string `json:"url"`
-}
+// URLFetchPayload is an alias to validator.URLFetchPayload for backwards compatibility.
+type URLFetchPayload = validator.URLFetchPayload
 
 // URLFetchResult is the output stored after processing.
 type URLFetchResult struct {
@@ -34,58 +30,20 @@ type URLFetchResult struct {
 // Returns result JSON string or an error.
 func Process(ctx context.Context, job *domain.Job) (string, error) {
 	switch job.Type {
-	case "URL_FETCH":
+	case domain.JobTypeURLFetch:
 		return processFetch(ctx, job.Payload)
 	default:
 		return "", domain.ErrInvalidJobType
 	}
 }
 
-// ValidateTargetURL verifies URL format, scheme, and guards against SSRF (RFC 1918 / loopback / metadata).
+// ValidateTargetURL delegates to validator.ValidateTargetURL.
 func ValidateTargetURL(rawURL string) error {
-	parsed, err := url.ParseRequestURI(rawURL)
-	if err != nil {
-		return fmt.Errorf("invalid URL format: %w", err)
-	}
-
-	scheme := strings.ToLower(parsed.Scheme)
-	if scheme != "http" && scheme != "https" {
-		return errors.New("unsupported protocol (only http and https allowed)")
-	}
-
-	host := parsed.Hostname()
-	if host == "" {
-		return errors.New("empty host in URL")
-	}
-
-	// Allow bypassing SSRF filter in automated local tests
-	if os.Getenv("ALLOW_LOCAL_FETCH") == "true" {
-		return nil
-	}
-
-	// Resolve host and check for private / loopback IP addresses (SSRF defense)
-	ips, err := net.LookupIP(host)
-	if err != nil {
-		// If hostname is already an IP address
-		ip := net.ParseIP(host)
-		if ip != nil {
-			ips = []net.IP{ip}
-		} else {
-			return fmt.Errorf("failed to resolve host: %w", err)
-		}
-	}
-
-	for _, ip := range ips {
-		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() || ip.IsUnspecified() {
-			return fmt.Errorf("target resolves to disallowed or private IP (%s)", ip.String())
-		}
-	}
-
-	return nil
+	return validator.ValidateTargetURL(rawURL)
 }
 
 func processFetch(ctx context.Context, payload string) (string, error) {
-	var p URLFetchPayload
+	var p validator.URLFetchPayload
 	if err := json.Unmarshal([]byte(payload), &p); err != nil {
 		return "", fmt.Errorf("invalid payload: %w", err)
 	}
@@ -94,7 +52,7 @@ func processFetch(ctx context.Context, payload string) (string, error) {
 		return "", domain.ErrInvalidPayload
 	}
 
-	if err := ValidateTargetURL(p.URL); err != nil {
+	if err := validator.ValidateTargetURL(p.URL); err != nil {
 		return "", fmt.Errorf("security check failed: %w", err)
 	}
 
@@ -111,7 +69,7 @@ func processFetch(ctx context.Context, payload string) (string, error) {
 			if len(via) >= 5 {
 				return errors.New("stopped after 5 redirects")
 			}
-			return ValidateTargetURL(req.URL.String())
+			return validator.ValidateTargetURL(req.URL.String())
 		},
 	}
 
