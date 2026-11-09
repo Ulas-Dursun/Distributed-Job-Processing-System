@@ -28,6 +28,12 @@ func NewPostgresDB(databaseURL string) (*sql.DB, error) {
 }
 
 func initSchema(db *sql.DB) error {
+	var exists bool
+	err := db.QueryRow("SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_name = 'jobs')").Scan(&exists)
+	if err == nil && exists {
+		return nil
+	}
+
 	schema := `
 	CREATE TABLE IF NOT EXISTS jobs (
 		id UUID PRIMARY KEY,
@@ -45,6 +51,6 @@ func initSchema(db *sql.DB) error {
 	CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
 	CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at DESC);
 	`
-	_, err := db.Exec(schema)
+	_, err = db.Exec(schema)
 	return err
 }
